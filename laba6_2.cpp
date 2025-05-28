@@ -1,526 +1,514 @@
 #include <iostream>
-#include <vector>
 #include <iomanip>
 #include <random>
-#include <fstream>
-#include <algorithm>
-#include <stdexcept>
+#include <vector>
+#include <array>
+#include <string>
+#include <limits>
 
 using namespace std;
 
-// Константы AES
-const int BLOCK_SIZE = 16;    // Размер блока (State) в байтах (4x4)
-const int KEY_SIZE = 16;      // Размер ключа (Nk = 4 для AES-128)
-const int ROUNDS = 10;       // Количество раундов (Nr)
-const int Nk = 4;            // Число 32-битных слов в ключе
-const int Nb = 4;            // Число столбцов в State
-const int Nr = 10;           // Количество раундов
+using Byte = unsigned char;
+using Block = array<array<Byte, 4>, 4>;
 
-// S-box (рисунок 2.2)
-const unsigned char S_box[256] = {
-    0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
-    0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0, 0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0,
-    0xB7, 0xFD, 0x93, 0x26, 0x36, 0x3F, 0xF7, 0xCC, 0x34, 0xA5, 0xE5, 0xF1, 0x71, 0xD8, 0x31, 0x15,
-    0x04, 0xC7, 0x23, 0xC3, 0x18, 0x96, 0x05, 0x9A, 0x07, 0x12, 0x80, 0xE2, 0xEB, 0x27, 0xB2, 0x75,
-    0x09, 0x83, 0x2C, 0x1A, 0x1B, 0x6E, 0x5A, 0xA0, 0x52, 0x3B, 0xD6, 0xB3, 0x29, 0xE3, 0x2F, 0x84,
-    0x53, 0xD1, 0x00, 0xED, 0x20, 0xFC, 0xB1, 0x5B, 0x6A, 0xCB, 0xBE, 0x39, 0x4A, 0x4C, 0x58, 0xCF,
-    0xD0, 0xEF, 0xAA, 0xFB, 0x43, 0x4D, 0x33, 0x85, 0x45, 0xF9, 0x02, 0x7F, 0x50, 0x3C, 0x9F, 0xA8,
-    0x51, 0xA3, 0x40, 0x8F, 0x92, 0x9D, 0x38, 0xF5, 0xBC, 0xB6, 0xDA, 0x21, 0x10, 0xFF, 0xF3, 0xD2,
-    0xCD, 0x0C, 0x13, 0xEC, 0x5F, 0x97, 0x44, 0x17, 0xC4, 0xA7, 0x7E, 0x3D, 0x64, 0x5D, 0x19, 0x73,
-    0x60, 0x81, 0x4F, 0xDC, 0x22, 0x2A, 0x90, 0x88, 0x46, 0xEE, 0xB8, 0x14, 0xDE, 0x5E, 0x0B, 0xDB,
-    0xE0, 0x32, 0x3A, 0x0A, 0x49, 0x06, 0x24, 0x5C, 0xC2, 0xD3, 0xAC, 0x62, 0x91, 0x95, 0xE4, 0x79,
-    0xE7, 0xC8, 0x37, 0x6D, 0x8D, 0xD5, 0x4E, 0xA9, 0x6C, 0x56, 0xF4, 0xEA, 0x65, 0x7A, 0xAE, 0x08,
-    0xBA, 0x78, 0x25, 0x2E, 0x1C, 0xA6, 0xB4, 0xC6, 0xE8, 0xDD, 0x74, 0x1F, 0x4B, 0xBD, 0x8B, 0x8A,
-    0x70, 0x3E, 0xB5, 0x66, 0x48, 0x03, 0xF6, 0x0E, 0x61, 0x35, 0x57, 0xB9, 0x86, 0xC1, 0x1D, 0x9E,
-    0xE1, 0xF8, 0x98, 0x11, 0x69, 0xD9, 0x8E, 0x94, 0x9B, 0x1E, 0x87, 0xE9, 0xCE, 0x55, 0x28, 0xDF,
-    0x8C, 0xA1, 0x89, 0x0D, 0xBF, 0xE6, 0x42, 0x68, 0x41, 0x99, 0x2D, 0x0F, 0xB0, 0x54, 0xBB, 0x16
-};
+// Генерация случайного ключа заданной длины (по умолчанию 16 байт)
+void generateRandomKey(vector<Byte>& key, size_t length = 16) {
+    random_device rd; // источник энтропии
+    mt19937 gen(rd());
+    uniform_int_distribution<> dis(0, 255); // Один байт может хранить значения от 0 до 255
 
-// Обратный S-box (рисунок 2.3)
-const unsigned char Inv_S_box[256] = {
-    0x52, 0x09, 0x6A, 0xD5, 0x30, 0x36, 0xA5, 0x38, 0xBF, 0x40, 0xA3, 0x9E, 0x81, 0xF3, 0xD7, 0xFB,
-    0x7C, 0xE3, 0x39, 0x82, 0x9B, 0x2F, 0xFF, 0x87, 0x34, 0x8E, 0x43, 0x44, 0xC4, 0xDE, 0xE9, 0xCB,
-    0x54, 0x7B, 0x94, 0x32, 0xA6, 0xC2, 0x23, 0x3D, 0xEE, 0x4C, 0x95, 0x0B, 0x42, 0xFA, 0xC3, 0x4E,
-    0x08, 0x2E, 0xA1, 0x66, 0x28, 0xD9, 0x24, 0xB2, 0x76, 0x5B, 0xA2, 0x49, 0x6D, 0x8B, 0xD1, 0x25,
-    0x72, 0xF8, 0xF6, 0x64, 0x86, 0x68, 0x98, 0x16, 0xD4, 0xA4, 0x5C, 0xCC, 0x5D, 0x65, 0xB6, 0x92,
-    0x6C, 0x70, 0x48, 0x50, 0xFD, 0xED, 0xB9, 0xDA, 0x5E, 0x15, 0x46, 0x57, 0xA7, 0x8D, 0x9D, 0x84,
-    0x90, 0xD8, 0xAB, 0x00, 0x8C, 0xBC, 0xD3, 0x0A, 0xF7, 0xE4, 0x58, 0x05, 0xB8, 0xB3, 0x45, 0x06,
-    0xD0, 0x2C, 0x1E, 0x8F, 0xCA, 0x3F, 0x0F, 0x02, 0xC1, 0xAF, 0xBD, 0x03, 0x01, 0x13, 0x8A, 0x6B,
-    0x3A, 0x91, 0x11, 0x41, 0x4F, 0x67, 0xDC, 0xEA, 0x97, 0xF2, 0xCF, 0xCE, 0xF0, 0xB4, 0xE6, 0x73,
-    0x96, 0xAC, 0x74, 0x22, 0xE7, 0xAD, 0x35, 0x85, 0xE2, 0xF9, 0x37, 0xE8, 0x1C, 0x75, 0xDF, 0x6E,
-    0x47, 0xF1, 0x1A, 0x71, 0x1D, 0x29, 0xC5, 0x89, 0x6F, 0xB7, 0x62, 0x0E, 0xAA, 0x18, 0xBE, 0x1B,
-    0xFC, 0x56, 0x3E, 0x4B, 0xC6, 0xD2, 0x79, 0x20, 0x9A, 0xDB, 0xC0, 0xFE, 0x78, 0xCD, 0x5A, 0xF4,
-    0x1F, 0xDD, 0xA8, 0x33, 0x88, 0x07, 0xC7, 0x31, 0xB1, 0x12, 0x10, 0x59, 0x27, 0x80, 0xEC, 0x5F,
-    0x60, 0x51, 0x7F, 0xA9, 0x19, 0xB5, 0x4A, 0x0D, 0x2D, 0xE5, 0x7A, 0x9F, 0x93, 0xC9, 0x9C, 0xEF,
-    0xA0, 0xE0, 0x3B, 0x4D, 0xAE, 0x2A, 0xF5, 0xB0, 0xC8, 0xEB, 0xBB, 0x3C, 0x83, 0x53, 0x99, 0x61,
-    0x17, 0x2B, 0x04, 0x7E, 0xBA, 0x77, 0xD6, 0x26, 0xE1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0C, 0x7D
-};
-
-// Константы для Key Expansion (Rcon)
-const unsigned char Rcon[11] = {
-    0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36
-};
-
-// Вспомогательные функции
-void printState(const vector<unsigned char>& state, const string& title) {
-    cout << title << " (4x4 State):" << endl;
-    for (int row = 0; row < 4; ++row) {
-        for (int col = 0; col < 4; ++col) {
-            cout << hex << setw(2) << setfill('0')
-                 << (int)state[row + 4 * col] << " ";
-        }
-        cout << endl;
+    key.resize(length);
+    for (size_t i = 0; i < length; ++i) {
+        key[i] = static_cast<Byte>(dis(gen)); // Заполнение случайными байтами
     }
-    cout << dec << endl;
 }
 
-void printRoundKey(const vector<unsigned char>& key, int round, bool isEncrypt) {
-    cout << "Round Key " << round << " ("
-         << (isEncrypt ? "Encryption" : "Decryption") << "):" << endl;
-    for (int i = 0; i < 16; ++i) {
-        cout << hex << setw(2) << setfill('0') << (int)key[i] << " ";
-        if ((i + 1) % 4 == 0) cout << endl;
-    }
-    cout << dec << endl;
-}
-
-void printKeySchedule(const vector<unsigned char>& RoundKeys, const string& title) {
-    cout << title << ":" << endl;
-    for (size_t i = 0; i < RoundKeys.size(); ++i) {
-        cout << hex << setw(2) << setfill('0') << (int)RoundKeys[i] << " ";
-        if ((i + 1) % 16 == 0) cout << endl;
-    }
-    cout << dec << endl;
-}
-
-vector<unsigned char> generateRandomBytes(size_t count) {
+// Генерация случайного вектора-блока инициализации (IV) (уникальность шифрования)
+void generateRandomIV(Block& iv) {
     random_device rd;
     mt19937 gen(rd());
     uniform_int_distribution<> dis(0, 255);
+ // Заполнение блока IV 4x4 случайными байтами
+    for (int row = 0; row < 4; ++row)
+        for (int col = 0; col < 4; ++col)
+            iv[row][col] = static_cast<Byte>(dis(gen));
+}
 
-    vector<unsigned char> result(count);
-    for (size_t i = 0; i < count; ++i) {
-        result[i] = static_cast<unsigned char>(dis(gen));
+
+// Вывод ключа в шестнадцатеричном формате (hex)
+void printKey(const vector<Byte>& key) {
+    cout << "Ключ (16 байт): ";
+    for (Byte b : key) { //перебор байтов
+        cout << hex << setw(2) << setfill('0') //дополнение 0, чтобы было 2 символа
+             << static_cast<int>(b) << " ";
     }
+    cout << dec << "\n"; // 10-тичный формат (dec)
+}
+
+// Вывод блока данных в виде матрицы шестнадцатеричных значений
+void printBlock(const Block& block, const string& title = "") {
+    if (!title.empty()) cout << title << endl;
+    for (const auto& row : block) {
+        for (Byte b : row) {
+            cout << hex << setw(2) << setfill('0')
+                 << static_cast<int>(b) << " ";
+        }
+        cout << endl;
+    }
+    cout << dec;
+}
+
+
+// Преобразование текста в блоки по 16 байт с дополнением пробелов (чтобы были кратны 16)
+vector<Block> textToBlocks(const string& text) {
+    string padded = text;
+
+    while (padded.size() % 16 != 0) {
+        padded += ' ';
+    }
+
+// Результирующий вектор блоков (разбиение и заполнение)
+    vector<Block> blocks;
+    for (size_t i = 0; i < padded.size(); i += 16) {
+        Block block{};
+        for (int col = 0; col < 4; ++col) {
+            for (int row = 0; row < 4; ++row) {
+                block[row][col] = static_cast<Byte>(padded[i + col * 4 + row]);
+            }
+        }
+        blocks.push_back(block);//добавление блоков в вектор
+    }
+
+    return blocks;
+}
+
+// Преобразование блоков обратно в текст с удалением дополнения
+string blocksToText(const vector<Block>& blocks) {
+    string text;
+   // Сборка строки из всех блоков
+    for (const auto& block : blocks) {
+        for (int col = 0; col < 4; ++col)
+            for (int row = 0; row < 4; ++row)
+                text += static_cast<char>(block[row][col]);
+    }
+// Удаление дополнения
+    if (!text.empty()) {
+        unsigned char pad = static_cast<unsigned char>(text.back());
+        if (pad > 0 && pad <= 16 && text.size() >= pad) {    // Проверка, что последние байты - это дополнение
+            bool valid = true;
+            for (int i = 0; i < pad; ++i) {
+                if (static_cast<unsigned char>(text[text.size() - 1 - i]) != pad) {
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid) text.erase(text.size() - pad);
+        }
+    }
+
+    return text;
+}
+
+// =============================================
+//          Таблицы для AES (S-box, Rcon)
+// =============================================
+
+// Таблица замены (S-box) для AES - главный источник нелинейности
+// Каждый байт блока заменяется на соответствующий ему байт из S-box.
+const Byte sbox[256] = {
+    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+    0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+    0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
+    0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
+    0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
+    0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
+    0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
+    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
+    0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
+    0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
+    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
+    0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
+    0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
+    0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
+    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
+    0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16
+};
+
+// Обратная таблица замены (Inverse S-box) для AES
+const Byte invSBox[256] = {
+    0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb,
+    0x7c, 0xe3, 0x39, 0x82, 0x9b, 0x2f, 0xff, 0x87, 0x34, 0x8e, 0x43, 0x44, 0xc4, 0xde, 0xe9, 0xcb,
+    0x54, 0x7b, 0x94, 0x32, 0xa6, 0xc2, 0x23, 0x3d, 0xee, 0x4c, 0x95, 0x0b, 0x42, 0xfa, 0xc3, 0x4e,
+    0x08, 0x2e, 0xa1, 0x66, 0x28, 0xd9, 0x24, 0xb2, 0x76, 0x5b, 0xa2, 0x49, 0x6d, 0x8b, 0xd1, 0x25,
+    0x72, 0xf8, 0xf6, 0x64, 0x86, 0x68, 0x98, 0x16, 0xd4, 0xa4, 0x5c, 0xcc, 0x5d, 0x65, 0xb6, 0x92,
+    0x6c, 0x70, 0x48, 0x50, 0xfd, 0xed, 0xb9, 0xda, 0x5e, 0x15, 0x46, 0x57, 0xa7, 0x8d, 0x9d, 0x84,
+    0x90, 0xd8, 0xab, 0x00, 0x8c, 0xbc, 0xd3, 0x0a, 0xf7, 0xe4, 0x58, 0x05, 0xb8, 0xb3, 0x45, 0x06,
+    0xd0, 0x2c, 0x1e, 0x8f, 0xca, 0x3f, 0x0f, 0x02, 0xc1, 0xaf, 0xbd, 0x03, 0x01, 0x13, 0x8a, 0x6b,
+    0x3a, 0x91, 0x11, 0x41, 0x4f, 0x67, 0xdc, 0xea, 0x97, 0xf2, 0xcf, 0xce, 0xf0, 0xb4, 0xe6, 0x73,
+    0x96, 0xac, 0x74, 0x22, 0xe7, 0xad, 0x35, 0x85, 0xe2, 0xf9, 0x37, 0xe8, 0x1c, 0x75, 0xdf, 0x6e,
+    0x47, 0xf1, 0x1a, 0x71, 0x1d, 0x29, 0xc5, 0x89, 0x6f, 0xb7, 0x62, 0x0e, 0xaa, 0x18, 0xbe, 0x1b,
+    0xfc, 0x56, 0x3e, 0x4b, 0xc6, 0xd2, 0x79, 0x20, 0x9a, 0xdb, 0xc0, 0xfe, 0x78, 0xcd, 0x5a, 0xf4,
+    0x1f, 0xdd, 0xa8, 0x33, 0x88, 0x07, 0xc7, 0x31, 0xb1, 0x12, 0x10, 0x59, 0x27, 0x80, 0xec, 0x5f,
+    0x60, 0x51, 0x7f, 0xa9, 0x19, 0xb5, 0x4a, 0x0d, 0x2d, 0xe5, 0x7a, 0x9f, 0x93, 0xc9, 0x9c, 0xef,
+    0xa0, 0xe0, 0x3b, 0x4d, 0xae, 0x2a, 0xf5, 0xb0, 0xc8, 0xeb, 0xbb, 0x3c, 0x83, 0x53, 0x99, 0x61,
+    0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d
+};
+
+// Константы для расширения ключа (добавляют вариативность в раундовые ключи)
+const Byte Rcon[11] = {
+    0x00, 0x01, 0x02, 0x04, 0x08,
+    0x10, 0x20, 0x40, 0x80, 0x1B, 0x36
+};
+
+// Расширение ключа для AES (Key Schedule)
+vector<Block> expandKey(const vector<Byte>& key) {
+    vector<Byte> expandedKey(176); //16*11
+    for (int i = 0; i < 16; ++i)
+        expandedKey[i] = key[i];//Первые 16 байт — это исходный ключ, который мы копируем в начало массива
+
+    int bytesGenerated = 16;//счетчик уже сгенерированных байтов
+    int rconIndex = 1; //счетчик для константы Rcon, которая меняется на каждом этапе
+    Byte temp[4];
+
+    while (bytesGenerated < 176) {
+        for (int i = 0; i < 4; ++i)
+            temp[i] = expandedKey[bytesGenerated - 4 + i]; //генерации новых байтов
+
+ // Каждые 16 байтов выполняем специальные преобразования
+// 1) циклический сдвиг влево по кругу
+        if (bytesGenerated % 16 == 0) {
+            Byte t = temp[0];
+            temp[0] = temp[1];
+            temp[1] = temp[2];
+            temp[2] = temp[3];
+            temp[3] = t;
+// 2) замена байтов через S-box
+            for (int i = 0; i < 4; ++i)
+                temp[i] = sbox[temp[i]];
+// 3) Первый байт temp[0] XORится с текущей константой Rcon.
+//  После этого увеличивается индекс Rcon для следующего раунда.
+
+            temp[0] ^= Rcon[rconIndex++];
+        }
+// Генерация новых четырех байтов через XOR
+        for (int i = 0; i < 4; ++i) {
+            expandedKey[bytesGenerated] = expandedKey[bytesGenerated - 16] ^ temp[i];
+            ++bytesGenerated;
+        }
+    }
+// Делим весь массив из expandedKey на отдельные блоки по 16 байт. Блок = раундовый ключ
+    vector<Block> roundKeys;
+    for (int i = 0; i < 11; ++i) {
+        Block block{};
+        for (int j = 0; j < 16; ++j) {
+            block[j % 4][j / 4] = expandedKey[i * 16 + j];
+        }
+        roundKeys.push_back(block);
+    }
+
+    return roundKeys;
+}
+
+// Принимает два блока (a, b) и возвращает их побитовый XOR. Для AddRoundKey и СВС
+Block xorBlocks(const Block& a, const Block& b) {
+    Block result{};
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j)
+            result[i][j] = a[i][j] ^ b[i][j];
     return result;
 }
 
-void writeKeyToFile(const vector<unsigned char>& key, const string& filename) {
-    ofstream file(filename, ios::binary);
-    if (!file) {
-        throw runtime_error("Cannot open file for writing key");
-    }
-    file.write(reinterpret_cast<const char*>(key.data()), key.size());
-}
+// =============================================
+//      Базовые операции AES (шифрование)
+// =============================================
 
-vector<unsigned char> readKeyFromFile(const string& filename) {
-    ifstream file(filename, ios::binary | ios::ate);
-    if (!file) {
-        throw runtime_error("Cannot open file for reading key");
-    }
-
-    streamsize size = file.tellg();
-    file.seekg(0, ios::beg);
-
-    vector<unsigned char> buffer(size);
-    if (!file.read(reinterpret_cast<char*>(buffer.data()), size)) {
-        throw runtime_error("Failed to read key from file");
-    }
-
-    return buffer;
-}
-
-// Key Expansion (генерация Round Keys из Cipher Key)
-vector<unsigned char> KeyExpansion(const vector<unsigned char>& CipherKey) {
-    vector<unsigned char> RoundKeys(176); // 16 байт * 11 раундов
-
-    // Первые 16 байт - это исходный Cipher Key
-    copy(CipherKey.begin(), CipherKey.end(), RoundKeys.begin());
-
-    // Генерация оставшихся Round Keys
-    for (int i = Nk; i < Nb * (Nr + 1); ++i) {
-        vector<unsigned char> temp(4);
-        copy(RoundKeys.begin() + (i-1)*4, RoundKeys.begin() + i*4, temp.begin());
-
-        if (i % Nk == 0) {
-            // RotWord
-            rotate(temp.begin(), temp.begin()+1, temp.end());
-
-            // SubWord (применение S-box к каждому байту)
-            for (auto& byte : temp) byte = S_box[byte];
-
-            // XOR с Rcon[i/Nk]
-            temp[0] ^= Rcon[i/Nk];
-        }
-
-        // XOR с RoundKeys[i-Nk]
-        for (int j = 0; j < 4; ++j) {
-            RoundKeys[i*4 + j] = RoundKeys[(i-Nk)*4 + j] ^ temp[j];
-        }
-    }
-
-    return RoundKeys;
-}
-
-vector<unsigned char> GetRoundKey(const vector<unsigned char>& RoundKeys, int round) {
-    vector<unsigned char> roundKey(16);
-    copy(RoundKeys.begin() + round*16, RoundKeys.begin() + (round+1)*16, roundKey.begin());
-    return roundKey;
-}
-
-// Основные преобразования AES
-void SubBytes(vector<unsigned char>& state) {
-    for (auto& byte : state) byte = S_box[byte];
-}
-
-void InvSubBytes(vector<unsigned char>& state) {
-    for (auto& byte : state) byte = Inv_S_box[byte];
-}
-
-void ShiftRows(vector<unsigned char>& state) {
-    // Строка 0 - нет сдвига
-
-    // Строка 1 - циклический сдвиг на 1 влево
-    unsigned char temp = state[1];
-    state[1] = state[5];
-    state[5] = state[9];
-    state[9] = state[13];
-    state[13] = temp;
-
-    // Строка 2 - циклический сдвиг на 2 влево
-    swap(state[2], state[10]);
-    swap(state[6], state[14]);
-
-    // Строка 3 - циклический сдвиг на 3 влево (или 1 вправо)
-    temp = state[15];
-    state[15] = state[11];
-    state[11] = state[7];
-    state[7] = state[3];
-    state[3] = temp;
-}
-
-void InvShiftRows(vector<unsigned char>& state) {
-    // Строка 0 - нет сдвига
-
-    // Строка 1 - циклический сдвиг на 1 вправо
-    unsigned char temp = state[13];
-    state[13] = state[9];
-    state[9] = state[5];
-    state[5] = state[1];
-    state[1] = temp;
-
-    // Строка 2 - циклический сдвиг на 2 влево (как в ShiftRows)
-    swap(state[2], state[10]);
-    swap(state[6], state[14]);
-
-    // Строка 3 - циклический сдвиг на 3 вправо (или 1 влево)
-    temp = state[3];
-    state[3] = state[7];
-    state[7] = state[11];
-    state[11] = state[15];
-    state[15] = temp;
-}
-
-unsigned char gfMultiply(unsigned char a, unsigned char b) {
-    unsigned char result = 0;
-    unsigned char hi_bit_set;
-
+//умножение двух байтов в поле Галуа GF(2^8) для mixColumns
+Byte gmul(Byte a, Byte b) {
+    Byte p = 0;
+    Byte hi_bit_set;
     for (int i = 0; i < 8; i++) {
-        if (b & 1) {
-            result ^= a;
-        }
-
-        hi_bit_set = a & 0x80;
-        a <<= 1;
-        if (hi_bit_set) {
-            a ^= 0x1b; // x^8 + x^4 + x^3 + x + 1
-        }
-        b >>= 1;
+        if (b & 1)
+            p ^= a; // добавляем a к результату, если младший бит b равен 1
+        hi_bit_set = a & 0x80; // старший бит a
+        a <<= 1; // сдвиг a влево
+        if (hi_bit_set)
+            a ^= 0x1b; // редукция по полиному x^8 + x^4 + x^3 + x + 1
+        b >>= 1; // сдвиг b вправо
     }
-
-    return result;
+    return p;
 }
 
-void MixColumns(vector<unsigned char>& state) {
-    unsigned char temp[4];
-
-    for (int i = 0; i < 4; ++i) {
-        temp[0] = gfMultiply(0x02, state[4*i]) ^ gfMultiply(0x03, state[4*i+1]) ^ state[4*i+2] ^ state[4*i+3];
-        temp[1] = state[4*i] ^ gfMultiply(0x02, state[4*i+1]) ^ gfMultiply(0x03, state[4*i+2]) ^ state[4*i+3];
-        temp[2] = state[4*i] ^ state[4*i+1] ^ gfMultiply(0x02, state[4*i+2]) ^ gfMultiply(0x03, state[4*i+3]);
-        temp[3] = gfMultiply(0x03, state[4*i]) ^ state[4*i+1] ^ state[4*i+2] ^ gfMultiply(0x02, state[4*i+3]);
-
-        state[4*i] = temp[0];
-        state[4*i+1] = temp[1];
-        state[4*i+2] = temp[2];
-        state[4*i+3] = temp[3];
-    }
+// нелинейная замена байтов
+void subBytes(Block& state) {
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j)
+            state[i][j] = sbox[state[i][j]];// Замена через обратный S-box
 }
 
-void InvMixColumns(vector<unsigned char>& state) {
-    unsigned char temp[4];
+// циклический сдвиг строк
+void shiftRows(Block& state) {
+    Block temp = state;
 
-    for (int i = 0; i < 4; ++i) {
-        temp[0] = gfMultiply(0x0e, state[4*i]) ^ gfMultiply(0x0b, state[4*i+1]) ^ gfMultiply(0x0d, state[4*i+2]) ^ gfMultiply(0x09, state[4*i+3]);
-        temp[1] = gfMultiply(0x09, state[4*i]) ^ gfMultiply(0x0e, state[4*i+1]) ^ gfMultiply(0x0b, state[4*i+2]) ^ gfMultiply(0x0d, state[4*i+3]);
-        temp[2] = gfMultiply(0x0d, state[4*i]) ^ gfMultiply(0x09, state[4*i+1]) ^ gfMultiply(0x0e, state[4*i+2]) ^ gfMultiply(0x0b, state[4*i+3]);
-        temp[3] = gfMultiply(0x0b, state[4*i]) ^ gfMultiply(0x0d, state[4*i+1]) ^ gfMultiply(0x09, state[4*i+2]) ^ gfMultiply(0x0e, state[4*i+3]);
-
-        state[4*i] = temp[0];
-        state[4*i+1] = temp[1];
-        state[4*i+2] = temp[2];
-        state[4*i+3] = temp[3];
-    }
+    for (int i = 1; i < 4; ++i)
+        for (int j = 0; j < 4; ++j)
+            state[i][j] = temp[i][(j + i) % 4];
 }
 
-void AddRoundKey(vector<unsigned char>& state, const vector<unsigned char>& roundKey) {
-    for (int i = 0; i < 16; ++i) {
-        state[i] ^= roundKey[i];
+// перемешивание байтов столбцов
+void mixColumns(Block& state) {
+    for (int col = 0; col < 4; ++col) {
+        Byte s0 = state[0][col];
+        Byte s1 = state[1][col];
+        Byte s2 = state[2][col];
+        Byte s3 = state[3][col];
+// Каждое новое значение вычисляется как сумма произведений исходных байтов и констант матрицы
+        state[0][col] = gmul(s0, 2) ^ gmul(s1, 3) ^ s2 ^ s3;
+        state[1][col] = s0 ^ gmul(s1, 2) ^ gmul(s2, 3) ^ s3;
+        state[2][col] = s0 ^ s1 ^ gmul(s2, 2) ^ gmul(s3, 3);
+        state[3][col] = gmul(s0, 3) ^ s1 ^ s2 ^ gmul(s3, 2);
     }
 }
+// AddRoundKey (добавление раундового ключа) реализована с помощью xorBlocks
+Block encryptBlock(const Block& input, const vector<Block>& roundKeys) {
+    cout << "\nНачало шифрования блока:\n";
+    printBlock(input, "Исходный блок:");
 
-// Шифрование одного блока
-vector<unsigned char> AES_Encrypt_Block(vector<unsigned char> state,
-                                      const vector<unsigned char>& RoundKeys) {
-    printState(state, "Initial State");
+    Block state = xorBlocks(input, roundKeys[0]);
+    printBlock(state, "После AddRoundKey (раунд 0):");
 
-    // Начальный раунд
-    AddRoundKey(state, GetRoundKey(RoundKeys, 0));
-    printState(state, "After AddRoundKey (Round 0)");
-    printRoundKey(GetRoundKey(RoundKeys, 0), 0, true);
+    for (int round = 1; round < 10; ++round) {
+        subBytes(state);
+        printBlock(state, "После SubBytes (раунд " + to_string(round) + "):");
 
-    // Основные раунды
-    for (int round = 1; round < Nr; ++round) {
-        SubBytes(state);
-        printState(state, "After SubBytes (Round " + to_string(round) + ")");
+        shiftRows(state);
+        printBlock(state, "После ShiftRows (раунд " + to_string(round) + "):");
 
-        ShiftRows(state);
-        printState(state, "After ShiftRows (Round " + to_string(round) + ")");
+        mixColumns(state);
+        printBlock(state, "После MixColumns (раунд " + to_string(round) + "):");
 
-        MixColumns(state);
-        printState(state, "After MixColumns (Round " + to_string(round) + ")");
-
-        AddRoundKey(state, GetRoundKey(RoundKeys, round));
-        printState(state, "After AddRoundKey (Round " + to_string(round) + ")");
-        printRoundKey(GetRoundKey(RoundKeys, round), round, true);
+        state = xorBlocks(state, roundKeys[round]);
+        printBlock(state, "После AddRoundKey (раунд " + to_string(round) + "):");
     }
 
-    // Финальный раунд (без MixColumns)
-    SubBytes(state);
-    printState(state, "After SubBytes (Round " + to_string(Nr) + ")");
+    subBytes(state);
+    printBlock(state, "После SubBytes (раунд 10):");
 
-    ShiftRows(state);
-    printState(state, "After ShiftRows (Round " + to_string(Nr) + ")");
+    shiftRows(state);
+    printBlock(state, "После ShiftRows (раунд 10):");
 
-    AddRoundKey(state, GetRoundKey(RoundKeys, Nr));
-    printState(state, "After AddRoundKey (Round " + to_string(Nr) + ")");
-    printRoundKey(GetRoundKey(RoundKeys, Nr), Nr, true);
+    state = xorBlocks(state, roundKeys[10]);
+    printBlock(state, "После AddRoundKey (раунд 10):");
 
+    cout << "Конец шифрования блока\n";
     return state;
 }
 
-// Дешифрование одного блока
-vector<unsigned char> AES_Decrypt_Block(vector<unsigned char> state,
-                                      const vector<unsigned char>& RoundKeys) {
-    printState(state, "Initial State (Encrypted)");
+// =============================================
+//      Базовые операции AES (дешифрование)
+// =============================================
 
-    // Начальный раунд
-    AddRoundKey(state, GetRoundKey(RoundKeys, Nr));
-    printState(state, "After AddRoundKey (Round " + to_string(Nr) + ")");
-    printRoundKey(GetRoundKey(RoundKeys, Nr), Nr, false);
+void invSubBytes(Block& state) {
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j)
+            state[i][j] = invSBox[state[i][j]];
+}
 
-    InvShiftRows(state);
-    printState(state, "After InvShiftRows (Round " + to_string(Nr) + ")");
+void invShiftRows(Block& state) {
+    Block temp = state;
 
-    InvSubBytes(state);
-    printState(state, "After InvSubBytes (Round " + to_string(Nr) + ")");
+    for (int i = 1; i < 4; ++i)
+        for (int j = 0; j < 4; ++j)
+            state[i][j] = temp[i][(j - i + 4) % 4];
+}
 
-    // Основные раунды
-    for (int round = Nr-1; round >= 1; --round) {
-        AddRoundKey(state, GetRoundKey(RoundKeys, round));
-        printState(state, "After AddRoundKey (Round " + to_string(round) + ")");
-        printRoundKey(GetRoundKey(RoundKeys, round), round, false);
+void invMixColumns(Block& state) {
+    for (int col = 0; col < 4; ++col) {
+        Byte s0 = state[0][col];
+        Byte s1 = state[1][col];
+        Byte s2 = state[2][col];
+        Byte s3 = state[3][col];
 
-        InvMixColumns(state);
-        printState(state, "After InvMixColumns (Round " + to_string(round) + ")");
+        state[0][col] = gmul(s0, 0x0e) ^ gmul(s1, 0x0b) ^ gmul(s2, 0x0d) ^ gmul(s3, 0x09);
+        state[1][col] = gmul(s0, 0x09) ^ gmul(s1, 0x0e) ^ gmul(s2, 0x0b) ^ gmul(s3, 0x0d);
+        state[2][col] = gmul(s0, 0x0d) ^ gmul(s1, 0x09) ^ gmul(s2, 0x0e) ^ gmul(s3, 0x0b);
+        state[3][col] = gmul(s0, 0x0b) ^ gmul(s1, 0x0d) ^ gmul(s2, 0x09) ^ gmul(s3, 0x0e);
+    }
+}
 
-        InvShiftRows(state);
-        printState(state, "After InvShiftRows (Round " + to_string(round) + ")");
+Block decryptBlock(const Block& input, const vector<Block>& roundKeys) {
+    cout << "\nНачало дешифрования блока:\n";
+    printBlock(input, "Зашифрованный блок:");
 
-        InvSubBytes(state);
-        printState(state, "After InvSubBytes (Round " + to_string(round) + ")");
+    Block state = xorBlocks(input, roundKeys[10]);
+    printBlock(state, "После AddRoundKey (раунд 10):");
+
+    for (int round = 9; round >= 1; --round) {
+        invShiftRows(state);
+        printBlock(state, "После InvShiftRows (раунд " + to_string(round) + "):");
+
+        invSubBytes(state);
+        printBlock(state, "После InvSubBytes (раунд " + to_string(round) + "):");
+
+        state = xorBlocks(state, roundKeys[round]);
+        printBlock(state, "После AddRoundKey (раунд " + to_string(round) + "):");
+
+        invMixColumns(state);
+        printBlock(state, "После InvMixColumns (раунд " + to_string(round) + "):");
     }
 
-    // Финальный раунд
-    AddRoundKey(state, GetRoundKey(RoundKeys, 0));
-    printState(state, "After AddRoundKey (Round 0)");
-    printRoundKey(GetRoundKey(RoundKeys, 0), 0, false);
+    invShiftRows(state);
+    printBlock(state, "После InvShiftRows (раунд 0):");
 
+    invSubBytes(state);
+    printBlock(state, "После InvSubBytes (раунд 0):");
+
+    state = xorBlocks(state, roundKeys[0]);
+    printBlock(state, "После AddRoundKey (раунд 0):");
+
+    cout << "Конец дешифрования блока\n";
     return state;
 }
 
-vector<unsigned char> xorBlocks(const vector<unsigned char>& a, const vector<unsigned char>& b) {
-    vector<unsigned char> result(BLOCK_SIZE);
-    for (int i = 0; i < BLOCK_SIZE; ++i) {
-        result[i] = a[i] ^ b[i];
-    }
-    return result;
-}
+// =============================================
+//      Режим CBC (Cipher Block Chaining)
+// =============================================
 
-vector<unsigned char> padData(const vector<unsigned char>& data) {
-    size_t padLen = BLOCK_SIZE - (data.size() % BLOCK_SIZE);
-    vector<unsigned char> padded = data;
-    padded.insert(padded.end(), padLen, static_cast<unsigned char>(padLen));
-    return padded;
-}
+vector<Block> AES_CBC_encrypt(const vector<Block>& plaintextBlocks,
+                             const vector<Block>& roundKeys,
+                             const Block& iv) {
+    vector<Block> ciphertextBlocks;
+    Block previous = iv;
 
-vector<unsigned char> unpadData(const vector<unsigned char>& data) {
-    if (data.empty()) return data;
+    for (size_t i = 0; i < plaintextBlocks.size(); ++i) {
+        cout << "\nШифрование блока " << i + 1 << " из " << plaintextBlocks.size() << "\n";
+        printBlock(previous, "Вектор инициализации (IV) для этого блока:");
 
-    unsigned char padLen = data.back();
-    if (padLen > BLOCK_SIZE) return data; // Неверное заполнение
+        Block xored = xorBlocks(plaintextBlocks[i], previous);
+        printBlock(xored, "После XOR с IV:");
 
-    for (size_t i = data.size() - padLen; i < data.size(); ++i) {
-        if (data[i] != padLen) return data; // Неверное заполнение
+        Block encrypted = encryptBlock(xored, roundKeys);
+        ciphertextBlocks.push_back(encrypted);
+        previous = encrypted;
     }
 
-    vector<unsigned char> unpadded(data.begin(), data.end() - padLen);
-    return unpadded;
+    return ciphertextBlocks;
 }
 
-// CBC режим - шифрование
-vector<unsigned char> AES_CBC_Encrypt(const vector<unsigned char>& plaintext,
-                                    const vector<unsigned char>& key,
-                                    const vector<unsigned char>& iv) {
-    // 1. Key Expansion
-    vector<unsigned char> RoundKeys = KeyExpansion(key);
-    printKeySchedule(RoundKeys, "Expanded Key Schedule");
+vector<Block> AES_CBC_decrypt(const vector<Block>& ciphertextBlocks,
+                             const vector<Block>& roundKeys,
+                             const Block& iv) {
+    vector<Block> decryptedBlocks;
+    Block previous = iv;
 
-    // 2. Добавление PKCS#7 padding
-    vector<unsigned char> padded = padData(plaintext);
+    for (size_t i = 0; i < ciphertextBlocks.size(); ++i) {
+        cout << "\nДешифрование блока " << i + 1 << " из " << ciphertextBlocks.size() << "\n";
+        printBlock(previous, "Вектор инициализации (IV) для этого блока:");
 
-    // 3. Шифрование каждого блока
-    vector<unsigned char> ciphertext;
-    vector<unsigned char> prevBlock = iv;
+        Block decrypted = decryptBlock(ciphertextBlocks[i], roundKeys);
+        Block plain = xorBlocks(decrypted, previous);
+        decryptedBlocks.push_back(plain);
+        previous = ciphertextBlocks[i];
 
-    for (size_t i = 0; i < padded.size(); i += BLOCK_SIZE) {
-        vector<unsigned char> block(padded.begin()+i, padded.begin()+i+BLOCK_SIZE);
-
-        cout << "\nEncrypting Block " << (i / BLOCK_SIZE) + 1 << ":" << endl;
-        cout << "-----------------" << endl;
-
-        // XOR с предыдущим зашифрованным блоком (или IV для первого блока)
-        block = xorBlocks(block, prevBlock);
-        printState(block, "After XOR with previous block/IV");
-
-        // Шифрование блока
-        vector<unsigned char> encryptedBlock = AES_Encrypt_Block(block, RoundKeys);
-
-        // Сохраняем зашифрованный блок как предыдущий для следующей итерации
-        prevBlock = encryptedBlock;
-
-        // Добавляем к результату
-        ciphertext.insert(ciphertext.end(), encryptedBlock.begin(), encryptedBlock.end());
+        printBlock(plain, "После XOR с IV:");
     }
 
-    return ciphertext;
+    return decryptedBlocks;
 }
 
-// CBC режим - дешифрование
-vector<unsigned char> AES_CBC_Decrypt(const vector<unsigned char>& ciphertext,
-                                    const vector<unsigned char>& key,
-                                    const vector<unsigned char>& iv) {
-    // 1. Key Expansion
-    vector<unsigned char> RoundKeys = KeyExpansion(key);
-    printKeySchedule(RoundKeys, "Expanded Key Schedule");
-
-    // 2. Дешифрование каждого блока
-    vector<unsigned char> plaintext;
-    vector<unsigned char> prevBlock = iv;
-
-    for (size_t i = 0; i < ciphertext.size(); i += BLOCK_SIZE) {
-        vector<unsigned char> block(ciphertext.begin()+i, ciphertext.begin()+i+BLOCK_SIZE);
-
-        cout << "\nDecrypting Block " << (i / BLOCK_SIZE) + 1 << ":" << endl;
-        cout << "-----------------" << endl;
-
-        // Сохраняем зашифрованный блок для XOR после дешифрования
-        vector<unsigned char> tempBlock = block;
-
-        // Дешифрование блока
-        vector<unsigned char> decryptedBlock = AES_Decrypt_Block(block, RoundKeys);
-
-        // XOR с предыдущим зашифрованным блоком (или IV для первого блока)
-        decryptedBlock = xorBlocks(decryptedBlock, prevBlock);
-        printState(decryptedBlock, "After XOR with previous block/IV");
-
-        // Обновляем предыдущий блок для следующей итерации
-        prevBlock = tempBlock;
-
-        // Добавляем к результату
-        plaintext.insert(plaintext.end(), decryptedBlock.begin(), decryptedBlock.end());
-    }
-
-    // 3. Удаление заполнения
-    return unpadData(plaintext);
-}
+// =============================================
+//               Основная программа
+// =============================================
 
 int main() {
-    try {
-        // 1. Генерация случайного ключа и IV
-        vector<unsigned char> key = generateRandomBytes(KEY_SIZE);
-        vector<unsigned char> iv = generateRandomBytes(BLOCK_SIZE);
+    // 1. Ввод данных
+    string inputText;
 
-        // 2. Сохранение ключа в файл
-        writeKeyToFile(key, "aes_key.bin");
+    cout << "Введите текст для шифрования: \n";
+    getline(cin, inputText);
 
-        // 3. Пример текста для шифрования (может быть любым, включая русский)
-        string plaintext = "Hello, AES! Привет, AES! 1234";
-        vector<unsigned char> plaintextBytes(plaintext.begin(), plaintext.end());
+    // 2. Генерация ключа и IV
+    vector<Byte> masterKey;
+    Block iv;
+    generateRandomKey(masterKey);
+    generateRandomIV(iv);
 
-        cout << "=== AES-128 CBC Mode Implementation ===" << endl;
-        cout << "Original Text: " << plaintext << endl;
-        cout << "Original Bytes: ";
-        for (auto b : plaintextBytes) cout << hex << setw(2) << setfill('0') << (int)b << " ";
-        cout << dec << endl;
+    cout << "\n=============================================\n";
+    cout << "Генерация ключей и вектора инициализации\n";
+    cout << "=============================================\n";
+    printKey(masterKey);
+    printBlock(iv, "\nВектор инициализации (IV):");
 
-        cout << "\nKey: ";
-        for (auto b : key) cout << hex << setw(2) << setfill('0') << (int)b << " ";
-        cout << dec << endl;
+    // 3. Подготовка данных
+    vector<Block> plaintextBlocks = textToBlocks(inputText);
 
-        cout << "IV:  ";
-        for (auto b : iv) cout << hex << setw(2) << setfill('0') << (int)b << " ";
-        cout << dec << endl << endl;
-
-        // 4. Шифрование
-        cout << "\n=== ENCRYPTION PROCESS ===" << endl;
-        vector<unsigned char> ciphertext = AES_CBC_Encrypt(plaintextBytes, key, iv);
-
-        cout << "\nCiphertext Bytes: ";
-        for (auto b : ciphertext) cout << hex << setw(2) << setfill('0') << (int)b << " ";
-        cout << dec << endl << endl;
-
-        // 5. Дешифрование
-        cout << "\n=== DECRYPTION PROCESS ===" << endl;
-        vector<unsigned char> decryptedBytes = AES_CBC_Decrypt(ciphertext, key, iv);
-
-        string decryptedText(decryptedBytes.begin(), decryptedBytes.end());
-        cout << "\nDecrypted Text: " << decryptedText << endl;
-        cout << "Decrypted Bytes: ";
-        for (auto b : decryptedBytes) cout << hex << setw(2) << setfill('0') << (int)b << " ";
-        cout << dec << endl;
-
-        // 6. Проверка
-        if (plaintextBytes == decryptedBytes) {
-            cout << "\nSuccess! Decrypted text matches original." << endl;
-        } else {
-            cout << "\nError! Decrypted text does not match original." << endl;
-        }
-
-    } catch (const exception& e) {
-        cerr << "Error: " << e.what() << endl;
-        return 1;
+    cout << "\n=============================================\n";
+    cout << "Преобразование текста в блоки\n";
+    cout << "=============================================\n";
+    for (size_t i = 0; i < plaintextBlocks.size(); ++i) {
+        printBlock(plaintextBlocks[i], "Блок текста " + to_string(i + 1) + ":");
     }
+
+    // 4. Расширение ключа
+    vector<Block> roundKeys = expandKey(masterKey);
+
+    cout << "\n=============================================\n";
+    cout << "Раундовые ключи\n";
+    cout << "=============================================\n";
+    for (size_t i = 0; i < roundKeys.size(); ++i) {
+        printBlock(roundKeys[i], "Раундовый ключ " + to_string(i) + ":");
+    }
+
+    // 5. Шифрование
+    cout << "\n=============================================\n";
+    cout << "Процесс шифрования (AES-CBC)\n";
+    cout << "=============================================\n";
+    vector<Block> ciphertextBlocks = AES_CBC_encrypt(plaintextBlocks, roundKeys, iv);
+
+    // Сохраняем зашифрованные данные в строку (вместо файла)
+    string ciphertextStr;
+    for (const Block& block : ciphertextBlocks) {
+        for (int col = 0; col < 4; ++col) {
+            for (int row = 0; row < 4; ++row) {
+                ciphertextStr += static_cast<char>(block[row][col]);
+            }
+        }
+    }
+    cout << "\nЗашифрованные данные сохранены в памяти\n";
+
+    cout << "\n=============================================\n";
+    cout << "Результаты шифрования\n";
+    cout << "=============================================\n";
+    for (size_t i = 0; i < ciphertextBlocks.size(); ++i) {
+        printBlock(ciphertextBlocks[i], "Зашифрованный блок " + to_string(i + 1) + ":");
+    }
+
+    // 6. Дешифрование
+    cout << "\n=============================================\n";
+    cout << "Процесс дешифрования (AES-CBC)\n";
+    cout << "=============================================\n";
+    vector<Block> decryptedBlocks = AES_CBC_decrypt(ciphertextBlocks, roundKeys, iv);
+    string decryptedText = blocksToText(decryptedBlocks);
+
+    // Удаление дополнения
+    decryptedText.erase(decryptedText.find_last_not_of(' ') + 1);
+
+    cout << "\n=============================================\n";
+    cout << "Результаты дешифрования\n";
+    cout << "=============================================\n";
+    for (size_t i = 0; i < decryptedBlocks.size(); ++i) {
+        printBlock(decryptedBlocks[i], "Дешифрованный блок " + to_string(i + 1) + ":");
+    }
+
+    cout << "\nИсходный текст: \n" << inputText << "\n";
+    cout << "\nРасшифрованный текст: \n" << decryptedText << "\n";
+
+    // Вывод зашифрованного текста в hex
+    cout << "Зашифрованный текст:\n";
+    cout << hex << setfill('0');
+    for (unsigned char c : ciphertextStr) {
+        cout << setw(2) << static_cast<int>(c) << " ";
+    }
+    cout << dec << "\n";  // Возвращаем вывод в десятичный режим
 
     return 0;
 }
